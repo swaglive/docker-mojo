@@ -1,0 +1,87 @@
+name: Build
+
+on:
+  push:
+    branches:
+    - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+        - ""
+        include:
+        - version: ""
+          latest: true
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Configure
+      id: config
+      uses: actions/github-script@v7
+      env:
+        GITHUB_REPOSITORY_NAME: ${{ github.event.repository.name }}
+      with:
+        script: |
+          core.setOutput('nproc', require('os').cpus().length * 2)
+
+          core.setOutput('image-owner', process.env.GITHUB_REPOSITORY_OWNER)
+          core.setOutput('image-name', process.env.GITHUB_REPOSITORY_NAME.replace(/^docker-/, ''))
+  
+    - name: Setup - QEMU
+      id: qemu
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: ${{ matrix.platforms || env.PLATFORMS || 'linux/amd64' }}
+
+    - name: Setup - Docker buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Setup - Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Setup - Github Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+
+    - name: Setup - Docker image metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: |-
+          ${{ steps.config.outputs.image-owner }}/${{ steps.config.outputs.image-name }}
+          ghcr.io/${{ steps.config.outputs.image-owner }}/${{ steps.config.outputs.image-name }}
+        flavor: |-
+          latest=${{ !!matrix.latest }}
+        tags: |-
+          type=semver,pattern={{major}}.{{minor}},value=${{ matrix.version }}
+          type=semver,pattern={{major}}.{{minor}}.{{patch}},value=${{ matrix.version }}
+
+    - name: Build
+      uses: docker/build-push-action@v5
+      id: build
+      with:
+        context: .
+        build-args: |
+          version=${{ matrix.version }}
+        push: true
+        platforms: ${{ matrix.platforms || env.PLATFORMS || 'linux/amd64' }}
+        labels: ${{ steps.meta.outputs.labels }}
+        tags: ${{ steps.meta.outputs.tags }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
